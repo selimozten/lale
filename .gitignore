@@ -51,3 +51,6 @@ Thumbs.db
 results/*.json
 results/*.png
 results/*.svg
+
+# FIRST_PROMPT is a bootstrap artifact
+FIRST_PROMPT.md
