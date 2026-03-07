@@ -14,7 +14,14 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--category", type=str, required=True, help="Data category to generate.")
+@click.option(
+    "--category",
+    type=click.Choice(
+        ["all", "general", "reasoning", "tool_use", "finance", "legal", "code", "translation"],
+    ),
+    required=True,
+    help="Data category to generate (or 'all').",
+)
 @click.option("--num-examples", type=int, default=1000, help="Number of examples to generate.")
 @click.option("--batch-size", type=int, default=5, help="Examples per API call.")
 @click.option("--region", type=str, default="us-east-1", help="AWS region.")
