@@ -26,12 +26,15 @@ def cli() -> None:
 @click.option("--batch-size", type=int, default=5, help="Examples per API call.")
 @click.option("--region", type=str, default="us-east-1", help="AWS region.")
 @click.option("--output-dir", type=click.Path(), default="data/raw", help="Output directory.")
+@click.option("--api-key", type=str, default=None, envvar="BEDROCK_API_KEY",
+              help="Bedrock API key (or set BEDROCK_API_KEY env var).")
 def generate(
     category: str,
     num_examples: int,
     batch_size: int,
     region: str,
     output_dir: str,
+    api_key: str | None,
 ) -> None:
     """Generate Turkish instruction data using Claude Opus via Bedrock."""
     from lale.generate.generate_data import GenerationConfig, generate as run_generate, CATEGORIES
@@ -48,6 +51,7 @@ def generate(
             batch_size=batch_size,
             region=region,
             output_dir=Path(output_dir),
+            api_key=api_key,
         )
         run_generate(config)
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-import boto3
+import requests as httpx
 from pydantic import BaseModel
 from tqdm import tqdm
 
@@ -24,8 +25,8 @@ CATEGORIES = [
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-MODEL_ID = "anthropic.claude-opus-4-6-20250515-v1:0"
-MAX_TOKENS = 4096
+MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
+MAX_TOKENS = 8192
 DEFAULT_REGION = "us-east-1"
 
 # Rate limiting: max requests per minute to stay within Bedrock quotas
@@ -48,7 +49,18 @@ class GenerationConfig(BaseModel):
     max_retries: int = 3
     retry_delay: float = 5.0
     temperature: float = 0.9
-    top_p: float = 0.95
+    api_key: str | None = None
+
+
+def get_api_key(config: GenerationConfig) -> str:
+    """Resolve the Bedrock API key from config or environment."""
+    key = config.api_key or os.environ.get("BEDROCK_API_KEY")
+    if not key:
+        raise ValueError(
+            "Bedrock API key required. Set BEDROCK_API_KEY env var "
+            "or pass --api-key."
+        )
+    return key
 
 
 def load_template(category: str) -> str:
@@ -73,38 +85,44 @@ def build_prompt(template: str, batch_size: int) -> str:
 
 
 def call_bedrock(
-    client: Any,
+    api_key: str,
+    region: str,
     prompt: str,
     max_retries: int = 3,
     retry_delay: float = 5.0,
     temperature: float = 0.9,
-    top_p: float = 0.95,
 ) -> str | None:
-    """Call Claude Opus via Bedrock with retry logic."""
+    """Call Claude Opus via Bedrock API key with retry logic."""
+    url = (
+        f"https://bedrock-runtime.{region}.amazonaws.com"
+        f"/model/{MODEL_ID}/invoke"
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": MAX_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+    })
+
     for attempt in range(max_retries):
         try:
-            response = client.invoke_model(
-                modelId=MODEL_ID,
-                contentType="application/json",
-                accept="application/json",
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": MAX_TOKENS,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                    "top_p": top_p,
-                }),
-            )
-            body = json.loads(response["body"].read())
+            resp = httpx.post(url, headers=headers, data=payload, timeout=300)
+            if resp.status_code == 429:
+                if attempt < max_retries - 1:
+                    wait = retry_delay * (2**attempt)
+                    print(f"Throttled, waiting {wait:.0f}s...")
+                    time.sleep(wait)
+                    continue
+                return None
+            resp.raise_for_status()
+            body = resp.json()
             return body["content"][0]["text"]
-        except client.exceptions.ThrottlingException:
-            if attempt < max_retries - 1:
-                wait = retry_delay * (2**attempt)
-                time.sleep(wait)
-                continue
-            return None
         except Exception as e:
-            print(f"Error calling Bedrock (attempt {attempt + 1}): {e}")
+            print(f"Error calling Bedrock (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -163,7 +181,7 @@ def parse_response(raw: str, category: str) -> list[GeneratedExample]:
 def generate(config: GenerationConfig) -> Path:
     """Run the full data generation pipeline for a category."""
     template = load_template(config.category)
-    client = boto3.client("bedrock-runtime", region_name=config.region)
+    api_key = get_api_key(config)
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -200,11 +218,10 @@ def generate(config: GenerationConfig) -> Path:
             prompt = build_prompt(template, config.batch_size)
             last_request_time = time.monotonic()
             raw = call_bedrock(
-                client, prompt,
+                api_key, config.region, prompt,
                 max_retries=config.max_retries,
                 retry_delay=config.retry_delay,
                 temperature=config.temperature,
-                top_p=config.top_p,
             )
             if raw is None:
                 continue
