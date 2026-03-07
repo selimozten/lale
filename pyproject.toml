@@ -18,6 +18,7 @@ dependencies = [
     "tqdm>=4.60",
     "rapidfuzz>=3.0",
     "langdetect>=1.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +30,6 @@ train = [
     "datasets>=2.18",
     "trl>=0.8",
     "wandb>=0.16",
-    "pyyaml>=6.0",
 ]
 eval = [
     "terazi",
