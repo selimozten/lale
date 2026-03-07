@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -53,7 +53,10 @@ def run_terazi(config: EvalConfig) -> EvalResult:
         model=config.model_path,
         benchmark=config.benchmark,
         scores=scores,
-        metadata={"model_path": config.model_path},
+        metadata={
+            "model_path": config.model_path,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
     # Save results
