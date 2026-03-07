@@ -57,6 +57,18 @@ def make_table(rows: list[ComparisonRow]) -> str:
     return "\n".join(lines)
 
 
+def best_model(rows: list[ComparisonRow], metric: str) -> str | None:
+    """Return the model name with the highest score on a given metric."""
+    best_name: str | None = None
+    best_score = float("-inf")
+    for row in rows:
+        val = row.scores.get(metric)
+        if isinstance(val, (int, float)) and val > best_score:
+            best_score = val
+            best_name = row.model
+    return best_name
+
+
 def compare(results_dir: Path, output_path: Path | None = None) -> str:
     """Load results, build comparison table, optionally save."""
     rows = load_results(results_dir)
