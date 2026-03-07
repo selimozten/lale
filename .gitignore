@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/raw/
+data/filtered/
+
+# Model checkpoints and outputs
+outputs/
+checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.gguf
+
+# Weights & Biases
+wandb/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results (keep structure, ignore outputs)
+results/*.json
+results/*.png
+results/*.svg

@@ -1,0 +1,204 @@
+"""Generate Turkish instruction data using Claude Opus via AWS Bedrock."""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import boto3
+from pydantic import BaseModel
+from tqdm import tqdm
+
+CATEGORIES = [
+    "general",
+    "reasoning",
+    "tool_use",
+    "finance",
+    "legal",
+    "code",
+    "translation",
+]
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+MODEL_ID = "anthropic.claude-opus-4-6-20250515-v1:0"
+MAX_TOKENS = 4096
+DEFAULT_REGION = "us-east-1"
+
+
+class GeneratedExample(BaseModel):
+    id: str
+    category: str
+    messages: list[dict[str, str]]
+
+
+class GenerationConfig(BaseModel):
+    category: str
+    num_examples: int = 100
+    batch_size: int = 5
+    region: str = DEFAULT_REGION
+    output_dir: Path = Path("data/raw")
+    max_retries: int = 3
+    retry_delay: float = 5.0
+
+
+def load_template(category: str) -> str:
+    """Load the prompt template for a given category."""
+    path = TEMPLATES_DIR / f"{category}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"Template not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def build_prompt(template: str, batch_size: int) -> str:
+    """Build the full prompt for Opus to generate a batch of examples."""
+    return (
+        f"{template}\n\n"
+        f"Simdi tam olarak {batch_size} adet ornek uret. "
+        f"Her ornegi asagidaki JSON formatinda ver:\n\n"
+        f'{{"messages": [{{"role": "user", "content": "..."}}, '
+        f'{{"role": "assistant", "content": "..."}}]}}\n\n'
+        f"Ornekleri bir JSON dizisi icinde ver. Sadece JSON dizisini dondur, "
+        f"baska bir sey yazma. Ciktinin tamami gecerli JSON olmali."
+    )
+
+
+def call_bedrock(
+    client: Any,
+    prompt: str,
+    max_retries: int = 3,
+    retry_delay: float = 5.0,
+) -> str | None:
+    """Call Claude Opus via Bedrock with retry logic."""
+    for attempt in range(max_retries):
+        try:
+            response = client.invoke_model(
+                modelId=MODEL_ID,
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": MAX_TOKENS,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.9,
+                    "top_p": 0.95,
+                }),
+            )
+            body = json.loads(response["body"].read())
+            return body["content"][0]["text"]
+        except client.exceptions.ThrottlingException:
+            if attempt < max_retries - 1:
+                wait = retry_delay * (2**attempt)
+                time.sleep(wait)
+                continue
+            return None
+        except Exception as e:
+            print(f"Error calling Bedrock (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return None
+    return None
+
+
+def parse_response(raw: str, category: str) -> list[GeneratedExample]:
+    """Parse the model response into structured examples."""
+    # Try to extract JSON array from the response
+    text = raw.strip()
+    # Handle cases where model wraps in markdown code block
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+        if text.endswith("```"):
+            text = text[:-3].strip()
+
+    try:
+        items = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find a JSON array in the text
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1:
+            try:
+                items = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return []
+        else:
+            return []
+
+    if not isinstance(items, list):
+        items = [items]
+
+    examples: list[GeneratedExample] = []
+    for item in items:
+        messages = item.get("messages", [])
+        if not messages:
+            continue
+        # Validate message structure
+        if not all(
+            isinstance(m, dict) and "role" in m and "content" in m for m in messages
+        ):
+            continue
+        examples.append(
+            GeneratedExample(
+                id=str(uuid.uuid4()),
+                category=category,
+                messages=messages,
+            )
+        )
+    return examples
+
+
+def generate(config: GenerationConfig) -> Path:
+    """Run the full data generation pipeline for a category."""
+    template = load_template(config.category)
+    client = boto3.client("bedrock-runtime", region_name=config.region)
+
+    output_dir = config.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{config.category}.jsonl"
+
+    # Count existing examples to support resumption
+    existing = 0
+    if output_path.exists():
+        existing = sum(1 for _ in output_path.open())
+
+    remaining = config.num_examples - existing
+    if remaining <= 0:
+        print(f"Already have {existing} examples for {config.category}, skipping.")
+        return output_path
+
+    print(f"Generating {remaining} examples for '{config.category}' "
+          f"(have {existing}, target {config.num_examples})")
+
+    num_batches = (remaining + config.batch_size - 1) // config.batch_size
+    generated = 0
+
+    with output_path.open("a", encoding="utf-8") as f:
+        for _ in tqdm(range(num_batches), desc=config.category):
+            if generated >= remaining:
+                break
+
+            prompt = build_prompt(template, config.batch_size)
+            raw = call_bedrock(
+                client, prompt,
+                max_retries=config.max_retries,
+                retry_delay=config.retry_delay,
+            )
+            if raw is None:
+                continue
+
+            examples = parse_response(raw, config.category)
+            for ex in examples:
+                if generated >= remaining:
+                    break
+                f.write(ex.model_dump_json() + "\n")
+                f.flush()
+                generated += 1
+
+    total = existing + generated
+    print(f"Done. {total} total examples for '{config.category}' in {output_path}")
+    return output_path

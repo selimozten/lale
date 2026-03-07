@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lale"
+version = "0.1.0"
+description = "Turkish instruct model distilled from frontier model outputs"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Selim Ozten" }]
+
+dependencies = [
+    "boto3>=1.35",
+    "pydantic>=2.0",
+    "click>=8.0",
+    "tqdm>=4.60",
+    "rapidfuzz>=3.0",
+    "langdetect>=1.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "unsloth[colab-new]>=2024.0",
+    "torch>=2.0",
+    "transformers>=4.40",
+    "peft>=0.10",
+    "datasets>=2.18",
+    "trl>=0.8",
+    "wandb>=0.16",
+    "pyyaml>=6.0",
+]
+eval = [
+    "terazi",
+    "matplotlib>=3.8",
+    "tabulate>=0.9",
+]
+dev = [
+    "ruff>=0.4",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+lale = "lale.cli:cli"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]

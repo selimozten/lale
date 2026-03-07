@@ -1,0 +1,45 @@
+# lale training configuration
+
+# Base model
+base_model: "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"
+
+# LoRA configuration
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+  target_modules: "all-linear"
+
+# Training arguments
+training:
+  epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  weight_decay: 0.01
+  bf16: true
+  max_seq_length: 4096
+  packing: true
+
+# Data
+data:
+  train_path: "data/filtered/all.jsonl"
+  eval_split: 0.02
+
+# Output
+output:
+  dir: "outputs/lale-8b"
+  save_adapter: true
+  save_merged: false
+  push_to_hub: false
+  hub_model_id: "selimozten/lale-8b"
+
+# Logging
+logging:
+  wandb_project: "lale"
+  wandb_run_name: null
+  log_steps: 10
+  save_steps: 500
+  eval_steps: 500
