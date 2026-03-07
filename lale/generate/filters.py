@@ -66,8 +66,18 @@ def check_length(example: dict[str, Any]) -> bool:
 
 
 def check_language(example: dict[str, Any]) -> bool:
-    """Check that the primary language is Turkish."""
-    text = _extract_text(example)
+    """Check that the primary language is Turkish.
+
+    Only checks user and assistant messages (skips system messages, which
+    may legitimately be in English).
+    """
+    parts: list[str] = []
+    for msg in example.get("messages", []):
+        if msg.get("role") in ("user", "assistant"):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                parts.append(content)
+    text = " ".join(parts)
     if len(text) < 30:
         return True  # Too short to detect reliably, let it pass
     try:
