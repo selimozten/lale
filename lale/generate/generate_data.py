@@ -212,5 +212,8 @@ def generate(config: GenerationConfig) -> Path:
                 generated += 1
 
     total = existing + generated
+    failed = remaining - generated
     print(f"Done. {total} total examples for '{config.category}' in {output_path}")
+    if failed > 0:
+        print(f"Warning: {failed} examples could not be generated (API errors or parse failures)")
     return output_path
