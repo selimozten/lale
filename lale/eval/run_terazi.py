@@ -18,7 +18,7 @@ class EvalConfig(BaseModel):
 class EvalResult(BaseModel):
     model: str
     benchmark: str
-    scores: dict[str, float]
+    scores: dict[str, float | str]
     metadata: dict[str, str] = {}
 
 
