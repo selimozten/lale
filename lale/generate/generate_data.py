@@ -47,6 +47,8 @@ class GenerationConfig(BaseModel):
     output_dir: Path = Path("data/raw")
     max_retries: int = 3
     retry_delay: float = 5.0
+    temperature: float = 0.9
+    top_p: float = 0.95
 
 
 def load_template(category: str) -> str:
@@ -75,6 +77,8 @@ def call_bedrock(
     prompt: str,
     max_retries: int = 3,
     retry_delay: float = 5.0,
+    temperature: float = 0.9,
+    top_p: float = 0.95,
 ) -> str | None:
     """Call Claude Opus via Bedrock with retry logic."""
     for attempt in range(max_retries):
@@ -87,8 +91,8 @@ def call_bedrock(
                     "anthropic_version": "bedrock-2023-05-31",
                     "max_tokens": MAX_TOKENS,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.9,
-                    "top_p": 0.95,
+                    "temperature": temperature,
+                    "top_p": top_p,
                 }),
             )
             body = json.loads(response["body"].read())
@@ -199,6 +203,8 @@ def generate(config: GenerationConfig) -> Path:
                 client, prompt,
                 max_retries=config.max_retries,
                 retry_delay=config.retry_delay,
+                temperature=config.temperature,
+                top_p=config.top_p,
             )
             if raw is None:
                 continue
