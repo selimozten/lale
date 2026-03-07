@@ -25,7 +25,7 @@ CATEGORIES = [
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
+MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 MAX_TOKENS = 8192
 DEFAULT_REGION = "us-east-1"
 
