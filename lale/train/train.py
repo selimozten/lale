@@ -183,8 +183,15 @@ def train(config_path: Path) -> None:
         packing=config.training.packing,
     )
 
+    # Resume from checkpoint if one exists
+    last_checkpoint = None
+    output_checkpoints = list(Path(config.output.dir).glob("checkpoint-*"))
+    if output_checkpoints:
+        last_checkpoint = str(sorted(output_checkpoints)[-1])
+        print(f"Resuming from checkpoint: {last_checkpoint}")
+
     print("Starting training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=last_checkpoint)
 
     # Save
     if config.output.save_adapter:
