@@ -66,17 +66,28 @@ def load_config(path: Path) -> Config:
     return Config(**raw)
 
 
-def load_dataset(config: Config):
+def load_dataset(config: Config) -> tuple:
     """Load and prepare the training dataset."""
     from datasets import Dataset
 
-    examples: list[dict] = []
     data_path = Path(config.data.train_path)
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Training data not found: {data_path}\n"
+            f"Run 'lale generate' and 'lale prepare' first."
+        )
+
+    examples: list[dict] = []
     with data_path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 examples.append(json.loads(line))
+
+    if not examples:
+        raise ValueError(f"No examples found in {data_path}")
+
+    print(f"Loaded {len(examples)} examples from {data_path}")
 
     ds = Dataset.from_list(examples)
     if config.data.eval_split > 0:
