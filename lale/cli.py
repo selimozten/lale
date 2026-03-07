@@ -61,7 +61,6 @@ def generate(
 def prepare(input_dir: str, output_dir: str, skip_language_check: bool) -> None:
     """Filter and prepare training data."""
     from lale.generate.filters import filter_dataset, FilterStats
-    import json
 
     in_path = Path(input_dir)
     out_path = Path(output_dir)
