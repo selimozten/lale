@@ -28,6 +28,10 @@ MODEL_ID = "anthropic.claude-opus-4-6-20250515-v1:0"
 MAX_TOKENS = 4096
 DEFAULT_REGION = "us-east-1"
 
+# Rate limiting: max requests per minute to stay within Bedrock quotas
+REQUESTS_PER_MINUTE = 30
+_MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
+
 
 class GeneratedExample(BaseModel):
     id: str
@@ -177,12 +181,20 @@ def generate(config: GenerationConfig) -> Path:
     num_batches = (remaining + config.batch_size - 1) // config.batch_size
     generated = 0
 
+    last_request_time = 0.0
+
     with output_path.open("a", encoding="utf-8") as f:
         for _ in tqdm(range(num_batches), desc=config.category):
             if generated >= remaining:
                 break
 
+            # Rate limiting
+            elapsed = time.monotonic() - last_request_time
+            if elapsed < _MIN_REQUEST_INTERVAL:
+                time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+
             prompt = build_prompt(template, config.batch_size)
+            last_request_time = time.monotonic()
             raw = call_bedrock(
                 client, prompt,
                 max_retries=config.max_retries,
