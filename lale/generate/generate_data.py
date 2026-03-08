@@ -1,4 +1,4 @@
-"""Generate Turkish instruction data using Claude Opus via AWS Bedrock."""
+"""Generate Turkish instruction data using Claude via AWS Bedrock Converse API."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
 import requests as httpx
 from pydantic import BaseModel
@@ -26,12 +25,9 @@ CATEGORIES = [
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
-MAX_TOKENS = 8192
+MAX_TOKENS = 16384
 DEFAULT_REGION = "us-east-1"
-
-# Rate limiting: max requests per minute to stay within Bedrock quotas
-REQUESTS_PER_MINUTE = 30
-_MIN_REQUEST_INTERVAL = 60.0 / REQUESTS_PER_MINUTE
+REQUEST_TIMEOUT = 600
 
 
 class GeneratedExample(BaseModel):
@@ -43,7 +39,7 @@ class GeneratedExample(BaseModel):
 class GenerationConfig(BaseModel):
     category: str
     num_examples: int = 100
-    batch_size: int = 5
+    batch_size: int = 15
     region: str = DEFAULT_REGION
     output_dir: Path = Path("data/raw")
     max_retries: int = 3
@@ -72,7 +68,7 @@ def load_template(category: str) -> str:
 
 
 def build_prompt(template: str, batch_size: int) -> str:
-    """Build the full prompt for Opus to generate a batch of examples."""
+    """Build the full prompt to generate a batch of examples."""
     return (
         f"{template}\n\n"
         f"Simdi tam olarak {batch_size} adet ornek uret. "
@@ -92,25 +88,26 @@ def call_bedrock(
     retry_delay: float = 5.0,
     temperature: float = 0.9,
 ) -> str | None:
-    """Call Claude Opus via Bedrock API key with retry logic."""
+    """Call Claude via Bedrock Converse API with retry logic."""
     url = (
         f"https://bedrock-runtime.{region}.amazonaws.com"
-        f"/model/{MODEL_ID}/invoke"
+        f"/model/{MODEL_ID}/converse"
     )
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
     payload = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": MAX_TOKENS,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {
+            "maxTokens": MAX_TOKENS,
+            "temperature": temperature,
+        },
     })
 
     for attempt in range(max_retries):
         try:
-            resp = httpx.post(url, headers=headers, data=payload, timeout=300)
+            resp = httpx.post(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 429:
                 if attempt < max_retries - 1:
                     wait = retry_delay * (2**attempt)
@@ -120,7 +117,7 @@ def call_bedrock(
                 return None
             resp.raise_for_status()
             body = resp.json()
-            return body["content"][0]["text"]
+            return body["output"]["message"]["content"][0]["text"]
         except Exception as e:
             print(f"Error calling Bedrock (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -132,9 +129,8 @@ def call_bedrock(
 
 def parse_response(raw: str, category: str) -> list[GeneratedExample]:
     """Parse the model response into structured examples."""
-    # Try to extract JSON array from the response
     text = raw.strip()
-    # Handle cases where model wraps in markdown code block
+    # Handle markdown code block wrapping
     if text.startswith("```"):
         lines = text.split("\n")
         text = "\n".join(lines[1:])
@@ -144,7 +140,6 @@ def parse_response(raw: str, category: str) -> list[GeneratedExample]:
     try:
         items = json.loads(text)
     except json.JSONDecodeError:
-        # Try to find a JSON array in the text
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1:
@@ -163,7 +158,6 @@ def parse_response(raw: str, category: str) -> list[GeneratedExample]:
         messages = item.get("messages", [])
         if not messages:
             continue
-        # Validate message structure
         if not all(
             isinstance(m, dict) and "role" in m and "content" in m for m in messages
         ):
@@ -203,20 +197,12 @@ def generate(config: GenerationConfig) -> Path:
     num_batches = (remaining + config.batch_size - 1) // config.batch_size
     generated = 0
 
-    last_request_time = 0.0
-
     with output_path.open("a", encoding="utf-8") as f:
         for _ in tqdm(range(num_batches), desc=config.category):
             if generated >= remaining:
                 break
 
-            # Rate limiting
-            elapsed = time.monotonic() - last_request_time
-            if elapsed < _MIN_REQUEST_INTERVAL:
-                time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
-
             prompt = build_prompt(template, config.batch_size)
-            last_request_time = time.monotonic()
             raw = call_bedrock(
                 api_key, config.region, prompt,
                 max_retries=config.max_retries,
