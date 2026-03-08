@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests as httpx
+import boto3
+from botocore.config import Config as BotoConfig
 from pydantic import BaseModel
 from tqdm import tqdm
 
@@ -25,9 +26,15 @@ CATEGORIES = [
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
-MAX_TOKENS = 16384
+MAX_TOKENS = 8192
 DEFAULT_REGION = "us-east-1"
-REQUEST_TIMEOUT = 600
+WORKERS = 20
+BATCH_SIZE = 5
+
+BOTO_CONFIG = BotoConfig(
+    read_timeout=600,
+    retries={"max_attempts": 3, "mode": "adaptive"},
+)
 
 
 class GeneratedExample(BaseModel):
@@ -39,24 +46,23 @@ class GeneratedExample(BaseModel):
 class GenerationConfig(BaseModel):
     category: str
     num_examples: int = 100
-    batch_size: int = 15
+    batch_size: int = BATCH_SIZE
+    workers: int = WORKERS
     region: str = DEFAULT_REGION
     output_dir: Path = Path("data/raw")
-    max_retries: int = 3
-    retry_delay: float = 5.0
     temperature: float = 0.9
     api_key: str | None = None
 
 
-def get_api_key(config: GenerationConfig) -> str:
-    """Resolve the Bedrock API key from config or environment."""
+def init_api_key(config: GenerationConfig) -> None:
+    """Set the Bedrock API key in the environment for boto3."""
     key = config.api_key or os.environ.get("BEDROCK_API_KEY")
     if not key:
         raise ValueError(
             "Bedrock API key required. Set BEDROCK_API_KEY env var "
             "or pass --api-key."
         )
-    return key
+    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = key
 
 
 def load_template(category: str) -> str:
@@ -80,57 +86,28 @@ def build_prompt(template: str, batch_size: int) -> str:
     )
 
 
-def call_bedrock(
-    api_key: str,
+def call_bedrock_once(
     region: str,
     prompt: str,
-    max_retries: int = 3,
-    retry_delay: float = 5.0,
     temperature: float = 0.9,
 ) -> str | None:
-    """Call Claude via Bedrock Converse API with retry logic."""
-    url = (
-        f"https://bedrock-runtime.{region}.amazonaws.com"
-        f"/model/{MODEL_ID}/converse"
-    )
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    payload = json.dumps({
-        "messages": [{"role": "user", "content": [{"text": prompt}]}],
-        "inferenceConfig": {
-            "maxTokens": MAX_TOKENS,
-            "temperature": temperature,
-        },
-    })
-
-    for attempt in range(max_retries):
-        try:
-            resp = httpx.post(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
-            if resp.status_code == 429:
-                if attempt < max_retries - 1:
-                    wait = retry_delay * (2**attempt)
-                    print(f"Throttled, waiting {wait:.0f}s...")
-                    time.sleep(wait)
-                    continue
-                return None
-            resp.raise_for_status()
-            body = resp.json()
-            return body["output"]["message"]["content"][0]["text"]
-        except Exception as e:
-            print(f"Error calling Bedrock (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return None
-    return None
+    """Single Bedrock Converse call via boto3."""
+    try:
+        client = boto3.client("bedrock-runtime", region_name=region, config=BOTO_CONFIG)
+        resp = client.converse(
+            modelId=MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": MAX_TOKENS, "temperature": temperature},
+        )
+        return resp["output"]["message"]["content"][0]["text"]
+    except Exception as e:
+        print(f"Bedrock error: {e}")
+        return None
 
 
 def parse_response(raw: str, category: str) -> list[GeneratedExample]:
     """Parse the model response into structured examples."""
     text = raw.strip()
-    # Handle markdown code block wrapping
     if text.startswith("```"):
         lines = text.split("\n")
         text = "\n".join(lines[1:])
@@ -175,7 +152,7 @@ def parse_response(raw: str, category: str) -> list[GeneratedExample]:
 def generate(config: GenerationConfig) -> Path:
     """Run the full data generation pipeline for a category."""
     template = load_template(config.category)
-    api_key = get_api_key(config)
+    init_api_key(config)
 
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,37 +169,41 @@ def generate(config: GenerationConfig) -> Path:
         return output_path
 
     print(f"Generating {remaining} examples for '{config.category}' "
-          f"(have {existing}, target {config.num_examples})")
+          f"(have {existing}, target {config.num_examples}, "
+          f"workers={config.workers}, batch={config.batch_size})")
 
-    num_batches = (remaining + config.batch_size - 1) // config.batch_size
     generated = 0
 
     with output_path.open("a", encoding="utf-8") as f:
-        for _ in tqdm(range(num_batches), desc=config.category):
-            if generated >= remaining:
-                break
+        # Process in waves of concurrent requests
+        pbar = tqdm(total=remaining, desc=config.category, unit="ex")
+        while generated < remaining:
+            # How many batches in this wave
+            needed = remaining - generated
+            num_batches = min(config.workers, (needed + config.batch_size - 1) // config.batch_size)
 
             prompt = build_prompt(template, config.batch_size)
-            raw = call_bedrock(
-                api_key, config.region, prompt,
-                max_retries=config.max_retries,
-                retry_delay=config.retry_delay,
-                temperature=config.temperature,
-            )
-            if raw is None:
-                continue
 
-            examples = parse_response(raw, config.category)
-            for ex in examples:
-                if generated >= remaining:
-                    break
-                f.write(ex.model_dump_json() + "\n")
-                f.flush()
-                generated += 1
+            with ThreadPoolExecutor(max_workers=num_batches) as pool:
+                futures = [
+                    pool.submit(call_bedrock_once, config.region, prompt, config.temperature)
+                    for _ in range(num_batches)
+                ]
+                for future in as_completed(futures):
+                    raw = future.result()
+                    if raw is None:
+                        continue
+                    examples = parse_response(raw, config.category)
+                    for ex in examples:
+                        if generated >= remaining:
+                            break
+                        f.write(ex.model_dump_json() + "\n")
+                        generated += 1
+                    f.flush()
+                    pbar.update(len(examples))
+
+        pbar.close()
 
     total = existing + generated
-    failed = remaining - generated
     print(f"Done. {total} total examples for '{config.category}' in {output_path}")
-    if failed > 0:
-        print(f"Warning: {failed} examples could not be generated (API errors or parse failures)")
     return output_path

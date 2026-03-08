@@ -1,8 +1,7 @@
-"""Run data generation across all categories with limited concurrency."""
+"""Run data generation across all categories sequentially (each uses 20 concurrent workers)."""
 
 from __future__ import annotations
 
-import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -11,20 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lale.generate.generate_data import CATEGORIES, GenerationConfig, generate
 
-CONCURRENCY = 2
 NUM_EXAMPLES = 10_000
-BATCH_SIZE = 15
-
-
-def run_category(category: str) -> None:
-    config = GenerationConfig(
-        category=category,
-        num_examples=NUM_EXAMPLES,
-        batch_size=BATCH_SIZE,
-        output_dir=Path("data/raw"),
-        api_key=os.environ["BEDROCK_API_KEY"],
-    )
-    generate(config)
 
 
 if __name__ == "__main__":
@@ -33,9 +19,14 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"Generating {NUM_EXAMPLES} examples x {len(CATEGORIES)} categories")
-    print(f"Concurrency: {CONCURRENCY}, batch size: {BATCH_SIZE}")
 
-    with multiprocessing.Pool(processes=CONCURRENCY) as pool:
-        pool.map(run_category, CATEGORIES)
+    for category in CATEGORIES:
+        config = GenerationConfig(
+            category=category,
+            num_examples=NUM_EXAMPLES,
+            output_dir=Path("data/raw"),
+            api_key=os.environ["BEDROCK_API_KEY"],
+        )
+        generate(config)
 
     print("\nAll categories complete.")
